@@ -47,9 +47,7 @@ class JournalEntry(AccountsController):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		from erpnext.accounts.doctype.journal_entry_account.journal_entry_account import (
-			JournalEntryAccount,
-		)
+		from erpnext.accounts.doctype.journal_entry_account.journal_entry_account import JournalEntryAccount
 
 		accounts: DF.Table[JournalEntryAccount]
 		amended_from: DF.Link | None
@@ -194,15 +192,13 @@ class JournalEntry(AccountsController):
 		self.update_asset_value()
 		self.update_inter_company_jv()
 		self.update_invoice_discounting()
+		self.update_booked_depreciation()
 
 	def on_update_after_submit(self):
-		if hasattr(self, "repost_required"):
-			self.needs_repost = self.check_if_fields_updated(
-				fields_to_check=[], child_tables={"accounts": []}
-			)
-			if self.needs_repost:
-				self.validate_for_repost()
-				self.db_set("repost_required", self.needs_repost)
+		self.needs_repost = self.check_if_fields_updated(fields_to_check=[], child_tables={"accounts": []})
+		if self.needs_repost:
+			self.validate_for_repost()
+			self.repost_accounting_entries()
 
 	def on_cancel(self):
 		# References for this Journal are removed on the `on_cancel` event in accounts_controller
@@ -225,6 +221,7 @@ class JournalEntry(AccountsController):
 		self.unlink_inter_company_jv()
 		self.unlink_asset_adjustment_entry()
 		self.update_invoice_discounting()
+		self.update_booked_depreciation(1)
 
 	def get_title(self):
 		return self.pay_to_recd_from or self.accounts[0].account
@@ -438,6 +435,25 @@ class JournalEntry(AccountsController):
 					break
 			if status:
 				inv_disc_doc.set_status(status=status)
+
+	def update_booked_depreciation(self, cancel=0):
+		for d in self.get("accounts"):
+			if (
+				self.voucher_type == "Depreciation Entry"
+				and d.reference_type == "Asset"
+				and d.reference_name
+				and frappe.get_cached_value("Account", d.account, "root_type") == "Expense"
+				and d.debit
+			):
+				asset = frappe.get_doc("Asset", d.reference_name)
+				for fb_row in asset.get("finance_books"):
+					if fb_row.finance_book == self.finance_book:
+						if cancel:
+							fb_row.total_number_of_booked_depreciations -= 1
+						else:
+							fb_row.total_number_of_booked_depreciations += 1
+						fb_row.db_update()
+						break
 
 	def unlink_advance_entry_reference(self):
 		for d in self.get("accounts"):

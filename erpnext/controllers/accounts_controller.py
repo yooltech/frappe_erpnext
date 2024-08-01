@@ -1430,10 +1430,13 @@ class AccountsController(TransactionBase):
 					if d.exchange_gain_loss and (
 						(d.reference_doctype, d.reference_name, str(d.idx)) not in booked
 					):
-						if self.payment_type == "Receive":
-							party_account = self.paid_from
-						elif self.payment_type == "Pay":
-							party_account = self.paid_to
+						if self.book_advance_payments_in_separate_party_account:
+							party_account = d.account
+						else:
+							if self.payment_type == "Receive":
+								party_account = self.paid_from
+							elif self.payment_type == "Pay":
+								party_account = self.paid_to
 
 						dr_or_cr = "debit" if d.exchange_gain_loss > 0 else "credit"
 
@@ -1761,8 +1764,8 @@ class AccountsController(TransactionBase):
 		item_allowance = {}
 		global_qty_allowance, global_amount_allowance = None, None
 
-		role_allowed_to_over_bill = frappe.db.get_single_value(
-			"Accounts Settings", "role_allowed_to_over_bill"
+		role_allowed_to_over_bill = frappe.get_cached_value(
+			"Accounts Settings", None, "role_allowed_to_over_bill"
 		)
 		user_roles = frappe.get_roles()
 
@@ -2486,16 +2489,12 @@ class AccountsController(TransactionBase):
 
 	@frappe.whitelist()
 	def repost_accounting_entries(self):
-		if self.repost_required:
-			repost_ledger = frappe.new_doc("Repost Accounting Ledger")
-			repost_ledger.company = self.company
-			repost_ledger.append("vouchers", {"voucher_type": self.doctype, "voucher_no": self.name})
-			repost_ledger.flags.ignore_permissions = True
-			repost_ledger.insert()
-			repost_ledger.submit()
-			self.db_set("repost_required", 0)
-		else:
-			frappe.throw(_("No updates pending for reposting"))
+		repost_ledger = frappe.new_doc("Repost Accounting Ledger")
+		repost_ledger.company = self.company
+		repost_ledger.append("vouchers", {"voucher_type": self.doctype, "voucher_no": self.name})
+		repost_ledger.flags.ignore_permissions = True
+		repost_ledger.insert()
+		repost_ledger.submit()
 
 
 @frappe.whitelist()

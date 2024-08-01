@@ -496,6 +496,10 @@ class SalesOrder(SellingController):
 	def update_status(self, status):
 		self.check_modified_date()
 		self.set_status(update=True, status=status)
+		# Upon Sales Order Re-open, check for credit limit.
+		# Limit should be checked after the 'Hold/Closed' status is reset.
+		if status == "Draft" and self.docstatus == 1:
+			self.check_credit_limit()
 		self.update_reserved_qty()
 		self.notify_update()
 		clear_doctype_notifications(self)
@@ -598,6 +602,17 @@ class SalesOrder(SellingController):
 
 		if total_picked_qty and total_qty:
 			per_picked = total_picked_qty / total_qty * 100
+
+			pick_percentage = frappe.db.get_single_value("Stock Settings", "over_picking_allowance")
+			if pick_percentage:
+				total_qty += flt(total_qty) * (pick_percentage / 100)
+
+			if total_picked_qty > total_qty:
+				frappe.throw(
+					_(
+						"Total Picked Quantity {0} is more than ordered qty {1}. You can set the Over Picking Allowance in Stock Settings."
+					).format(total_picked_qty, total_qty)
+				)
 
 		self.db_set("per_picked", flt(per_picked), update_modified=False)
 

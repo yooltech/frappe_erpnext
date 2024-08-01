@@ -103,19 +103,8 @@ def get_item_details(args, doc=None, for_validate=False, overwrite_warehouse=Tru
 	if args.customer and cint(args.is_pos):
 		out.update(get_pos_profile_item_details(args.company, args, update_data=True))
 
-	if args.get("doctype") == "Material Request" and args.get("material_request_type") == "Material Transfer":
-		out.update(get_bin_details(args.item_code, args.get("from_warehouse")))
-
-	elif out.get("warehouse"):
-		if doc and doc.get("doctype") == "Purchase Order":
-			# calculate company_total_stock only for po
-			bin_details = get_bin_details(
-				args.item_code, out.warehouse, args.company, include_child_warehouses=True
-			)
-		else:
-			bin_details = get_bin_details(args.item_code, out.warehouse, include_child_warehouses=True)
-
-		out.update(bin_details)
+	if item.is_stock_item:
+		update_bin_details(args, out, doc)
 
 	# update args with out, if key or value not exists
 	for key, value in out.items():
@@ -164,6 +153,19 @@ def set_valuation_rate(out, args):
 
 	else:
 		out.update(get_valuation_rate(args.item_code, args.company, out.get("warehouse")))
+
+
+def update_bin_details(args, out, doc):
+	if args.get("doctype") == "Material Request" and args.get("material_request_type") == "Material Transfer":
+		out.update(get_bin_details(args.item_code, args.get("from_warehouse")))
+
+	elif out.get("warehouse"):
+		company = args.company if (doc and doc.get("doctype") == "Purchase Order") else None
+
+		# calculate company_total_stock only for po
+		bin_details = get_bin_details(args.item_code, out.warehouse, company, include_child_warehouses=True)
+
+		out.update(bin_details)
 
 
 def process_args(args):
@@ -1187,7 +1189,7 @@ def get_batch_qty(batch_no, warehouse, item_code):
 
 
 @frappe.whitelist()
-def apply_price_list(args, as_doc=False):
+def apply_price_list(args, as_doc=False, doc=None):
 	"""Apply pricelist on a document-like dict object and return as
 	{'parent': dict, 'children': list}
 
@@ -1226,7 +1228,7 @@ def apply_price_list(args, as_doc=False):
 		for item in item_list:
 			args_copy = frappe._dict(args.copy())
 			args_copy.update(item)
-			item_details = apply_price_list_on_item(args_copy)
+			item_details = apply_price_list_on_item(args_copy, doc=doc)
 			children.append(item_details)
 
 	if as_doc:
@@ -1244,10 +1246,10 @@ def apply_price_list(args, as_doc=False):
 		return {"parent": parent, "children": children}
 
 
-def apply_price_list_on_item(args):
+def apply_price_list_on_item(args, doc=None):
 	item_doc = frappe.db.get_value("Item", args.item_code, ["name", "variant_of"], as_dict=1)
 	item_details = get_price_list_rate(args, item_doc)
-	item_details.update(get_pricing_rule_for_item(args))
+	item_details.update(get_pricing_rule_for_item(args, doc=doc))
 
 	return item_details
 

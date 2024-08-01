@@ -76,14 +76,12 @@ class PaymentEntry(AccountsController):
 		self.setup_party_account_field()
 		self.set_missing_values()
 		self.set_liability_account()
-		self.validate_advance_account_currency()
 		self.set_missing_ref_details(force=True)
 		self.validate_payment_type()
 		self.validate_party_details()
 		self.set_exchange_rate()
 		self.validate_mandatory()
 		self.validate_reference_documents()
-		self.set_tax_withholding()
 		self.set_amounts()
 		self.validate_amounts()
 		self.apply_taxes()
@@ -97,6 +95,7 @@ class PaymentEntry(AccountsController):
 		self.validate_allocated_amount()
 		self.validate_paid_invoices()
 		self.ensure_supplier_is_not_blocked()
+		self.set_tax_withholding()
 		self.set_status()
 		self.set_total_in_words()
 
@@ -162,22 +161,6 @@ class PaymentEntry(AccountsController):
 			),
 			alert=True,
 		)
-
-	def validate_advance_account_currency(self):
-		if self.book_advance_payments_in_separate_party_account is True:
-			company_currency = frappe.get_cached_value("Company", self.company, "default_currency")
-			if self.payment_type == "Receive" and self.paid_from_account_currency != company_currency:
-				frappe.throw(
-					_("Booking advances in foreign currency account: {0} ({1}) is not yet supported.").format(
-						frappe.bold(self.paid_from), frappe.bold(self.paid_from_account_currency)
-					)
-				)
-			if self.payment_type == "Pay" and self.paid_to_account_currency != company_currency:
-				frappe.throw(
-					_("Booking advances in foreign currency account: {0} ({1}) is not yet supported.").format(
-						frappe.bold(self.paid_to), frappe.bold(self.paid_to_account_currency)
-					)
-				)
 
 	def on_cancel(self):
 		self.ignore_linked_doctypes = (
@@ -773,9 +756,7 @@ class PaymentEntry(AccountsController):
 		if not self.apply_tax_withholding_amount:
 			return
 
-		order_amount = self.get_order_net_total()
-
-		net_total = flt(order_amount) + flt(self.unallocated_amount)
+		net_total = self.calculate_tax_withholding_net_total()
 
 		# Adding args as purchase invoice to get TDS amount
 		args = frappe._dict(
@@ -819,7 +800,26 @@ class PaymentEntry(AccountsController):
 		for d in to_remove:
 			self.remove(d)
 
-	def get_order_net_total(self):
+	def calculate_tax_withholding_net_total(self):
+		net_total = 0
+		order_details = self.get_order_wise_tax_withholding_net_total()
+
+		for d in self.references:
+			tax_withholding_net_total = order_details.get(d.reference_name)
+			if not tax_withholding_net_total:
+				continue
+
+			net_taxable_outstanding = max(
+				0, d.outstanding_amount - (d.total_amount - tax_withholding_net_total)
+			)
+
+			net_total += min(net_taxable_outstanding, d.allocated_amount)
+
+		net_total += self.unallocated_amount
+
+		return net_total
+
+	def get_order_wise_tax_withholding_net_total(self):
 		if self.party_type == "Supplier":
 			doctype = "Purchase Order"
 		else:
@@ -827,11 +827,14 @@ class PaymentEntry(AccountsController):
 
 		docnames = [d.reference_name for d in self.references if d.reference_doctype == doctype]
 
-		tax_withholding_net_total = frappe.db.get_value(
-			doctype, {"name": ["in", docnames]}, ["sum(base_tax_withholding_net_total)"]
+		return frappe._dict(
+			frappe.db.get_all(
+				doctype,
+				filters={"name": ["in", docnames]},
+				fields=["name", "base_tax_withholding_net_total"],
+				as_list=True,
+			)
 		)
-
-		return tax_withholding_net_total
 
 	def apply_taxes(self):
 		self.initialize_taxes()
@@ -1234,13 +1237,21 @@ class PaymentEntry(AccountsController):
 		if reference.reference_doctype == "Sales Invoice":
 			return "credit", reference.account
 
+		if reference.reference_doctype == "Purchase Invoice":
+			return "debit", reference.account
+
 		if reference.reference_doctype == "Payment Entry":
+			# reference.account_type and reference.payment_type is only available for Reverse payments
 			if reference.account_type == "Receivable" and reference.payment_type == "Pay":
 				return "credit", self.party_account
 			else:
 				return "debit", self.party_account
 
-		return "debit", reference.account
+		if reference.reference_doctype == "Journal Entry":
+			if self.party_type == "Customer" and self.payment_type == "Receive":
+				return "credit", reference.account
+			else:
+				return "debit", reference.account
 
 	def add_advance_gl_for_reference(self, gl_entries, invoice):
 		args_dict = {
@@ -1266,7 +1277,7 @@ class PaymentEntry(AccountsController):
 
 		dr_or_cr, account = self.get_dr_and_account_for_advances(invoice)
 		args_dict["account"] = account
-		args_dict[dr_or_cr] = invoice.allocated_amount
+		args_dict[dr_or_cr] = self.calculate_base_allocated_amount_for_reference(invoice)
 		args_dict[dr_or_cr + "_in_account_currency"] = invoice.allocated_amount
 		args_dict.update(
 			{
@@ -1285,7 +1296,7 @@ class PaymentEntry(AccountsController):
 		args_dict[dr_or_cr + "_in_account_currency"] = 0
 		dr_or_cr = "debit" if dr_or_cr == "credit" else "credit"
 		args_dict["account"] = self.party_account
-		args_dict[dr_or_cr] = invoice.allocated_amount
+		args_dict[dr_or_cr] = self.calculate_base_allocated_amount_for_reference(invoice)
 		args_dict[dr_or_cr + "_in_account_currency"] = invoice.allocated_amount
 		args_dict.update(
 			{
