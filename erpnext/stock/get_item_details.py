@@ -592,7 +592,10 @@ def _get_item_tax_template(args, taxes, out=None, for_validate=False):
 			if tax.valid_from or tax.maximum_net_rate:
 				# In purchase Invoice first preference will be given to supplier invoice date
 				# if supplier date is not present then posting date
-				validation_date = args.get("bill_date") or args.get("transaction_date")
+
+				validation_date = (
+					args.get("bill_date") or args.get("posting_date") or args.get("transaction_date")
+				)
 
 				if getdate(tax.valid_from) <= getdate(validation_date) and is_within_valid_range(args, tax):
 					taxes_with_validity.append(tax)
@@ -940,11 +943,12 @@ def get_batch_based_item_price(params, item_code) -> float:
 		params = parse_json(params)
 
 	item_price = get_item_price(params, item_code, force_batch_no=True)
+
 	if not item_price:
 		item_price = get_item_price(params, item_code, ignore_party=True, force_batch_no=True)
 
-	if item_price and item_price[0].uom == params.get("uom"):
-		return item_price[0].price_list_rate
+	if item_price and item_price[0][2] == params.get("uom"):
+		return item_price[0][1]
 
 	return 0.0
 

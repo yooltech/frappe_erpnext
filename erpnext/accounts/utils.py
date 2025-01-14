@@ -130,7 +130,9 @@ def get_fiscal_years(
 			else:
 				return ((fy.name, fy.year_start_date, fy.year_end_date),)
 
-	error_msg = _("""{0} {1} is not in any active Fiscal Year""").format(label, formatdate(transaction_date))
+	error_msg = _("""{0} {1} is not in any active Fiscal Year""").format(
+		_(label), formatdate(transaction_date)
+	)
 	if company:
 		error_msg = _("""{0} for {1}""").format(error_msg, frappe.bold(company))
 
@@ -629,6 +631,16 @@ def update_reference_in_journal_entry(d, journal_entry, do_not_save=False):
 	update_advance_paid = []
 	if jv_detail.get("reference_type") in ["Sales Order", "Purchase Order"]:
 		update_advance_paid.append((jv_detail.reference_type, jv_detail.reference_name))
+
+	rev_dr_or_cr = (
+		"debit_in_account_currency"
+		if d["dr_or_cr"] == "credit_in_account_currency"
+		else "credit_in_account_currency"
+	)
+	if jv_detail.get(rev_dr_or_cr):
+		d["dr_or_cr"] = rev_dr_or_cr
+		d["allocated_amount"] = d["allocated_amount"] * -1
+		d["unadjusted_amount"] = d["unadjusted_amount"] * -1
 
 	if flt(d["unadjusted_amount"]) - flt(d["allocated_amount"]) != 0:
 		# adjust the unreconciled balance
